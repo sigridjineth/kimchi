@@ -1,0 +1,11 @@
+{"timestamp":"2026-02-28T09:27:35.919Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:28:08.105Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:32:55.809Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:35:59.098Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:38:37.548Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:40:25.686Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:42:42.835Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:43:25.127Z","type":"hook_dispatch","event":"turn-complete","source":"native","enabled":false,"reason":"plugins_disabled"}
+{"timestamp":"2026-02-28T09:43:38.740Z","type":"hook_plugin_dispatch","event":"turn-complete","source":"native","plugin":"kimchi-session-end-embed","file":"kimchi-session-end-embed.mjs","ok":true,"status":"ok","reason":"ok","duration_ms":81}
+{"timestamp":"2026-02-28T09:43:51.532Z","type":"hook_plugin_log","plugin":"kimchi-session-end-embed","level":"info","message":"kimchi hook queued session embedding","hook_event":"session-end","session_id":"hook-test-session","project_path":"/Users/sigridjineth/Desktop/work/flex-codex/flex","kimchi_home":"/var/folders/b4/j8qgwdq52nx97bsb29r5bhmr0000gn/T/tmp.z1q8h1gu59","session_root":"/var/folders/b4/j8qgwdq52nx97bsb29r5bhmr0000gn/T/tmp.7Dkxu15UTv"}
+{"timestamp":"2026-02-28T09:43:51.535Z","type":"hook_plugin_dispatch","event":"session-end","source":"native","plugin":"kimchi-session-end-embed","file":"kimchi-session-end-embed.mjs","ok":true,"status":"ok","reason":"ok","duration_ms":80}

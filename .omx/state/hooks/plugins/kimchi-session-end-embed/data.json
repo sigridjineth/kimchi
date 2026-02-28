@@ -1,0 +1,21 @@
+{
+  "last_session_id": "hook-test-session",
+  "last_launch": {
+    "at": "2026-02-28T09:43:51.530Z",
+    "session_id": "hook-test-session",
+    "project_path": "/Users/sigridjineth/Desktop/work/flex-codex/flex",
+    "command": [
+      "python3",
+      "/Users/sigridjineth/Desktop/work/flex-codex/flex/kimchi.py",
+      "index",
+      "--home",
+      "/var/folders/b4/j8qgwdq52nx97bsb29r5bhmr0000gn/T/tmp.z1q8h1gu59",
+      "--cell",
+      "codex_code",
+      "--session-root",
+      "/var/folders/b4/j8qgwdq52nx97bsb29r5bhmr0000gn/T/tmp.7Dkxu15UTv",
+      "--session-id",
+      "hook-test-session"
+    ]
+  }
+}

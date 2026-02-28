@@ -1,0 +1,17 @@
+{
+  "current_phase": "checkpoint",
+  "task_description": "Repository rewritten into 3-file Kimchi architecture with URL embeddings and codex-only flow",
+  "active": true,
+  "completed_changes": [
+    "Removed legacy flex and tests tree",
+    "Added kimchi.py kimchi_embed.py kimchi_query.py as only logic files",
+    "Updated pyproject to py-modules and kimchi script",
+    "Updated README and CI, removed flex/onnx/claude references"
+  ],
+  "verification": [
+    "python3 -m py_compile kimchi.py kimchi_embed.py kimchi_query.py",
+    "smoke init/search on synthetic session data succeeded"
+  ],
+  "iteration": 8,
+  "last_turn_at": "2026-02-28T09:43:25.123Z"
+}

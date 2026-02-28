@@ -1,0 +1,9 @@
+{
+  "pid": 98786,
+  "started_at": "2026-02-28T08:43:37.631Z",
+  "cwd": "/Users/sigridjineth/Desktop/work/flex-codex/flex",
+  "notify_script": "/opt/homebrew/lib/node_modules/oh-my-codex/scripts/notify-hook.js",
+  "poll_ms": 700,
+  "tracked_files": 7,
+  "seen_turns": 4
+}
