@@ -6,13 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
 from kimchi_embed import embed_texts
 from kimchi_query import (
     cell_path,
+    file_history_search,
     inspect_schema,
     open_db,
     run_sql_readonly,
@@ -309,6 +312,218 @@ def index_codex_sessions(
     }
 
 
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9-]+", "-", value.strip().lower()).strip("-")
+    return slug or "kimchi-session-skill"
+
+
+def _session_rows(conn: sqlite3.Connection, run_key: str, max_cards: int = 300) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT
+            pc.card_key,
+            pc.text_body,
+            rc.turn_no,
+            cm.mark_kind,
+            cm.actor_role,
+            op.op_code,
+            op.file_path_hint
+        FROM run_cards rc
+        JOIN pantry_cards pc ON pc.card_key = rc.card_key
+        LEFT JOIN card_marks cm ON cm.card_key = rc.card_key
+        LEFT JOIN op_notes op ON op.card_key = rc.card_key
+        WHERE rc.run_key = ?
+        ORDER BY rc.turn_no ASC
+        LIMIT ?
+        """,
+        (run_key, max_cards),
+    ).fetchall()
+
+
+def _recent_run_keys_for_file(conn: sqlite3.Connection, file_query: str, top_sessions: int) -> list[str]:
+    pattern = f"%{file_query.strip()}%"
+    if not file_query.strip():
+        return []
+    rows = conn.execute(
+        """
+        SELECT rc.run_key, MAX(pc.born_unix) AS last_unix
+        FROM op_notes op
+        JOIN run_cards rc ON rc.card_key = op.card_key
+        JOIN pantry_cards pc ON pc.card_key = rc.card_key
+        WHERE LOWER(COALESCE(op.file_path_hint, '')) LIKE LOWER(?)
+        GROUP BY rc.run_key
+        ORDER BY last_unix DESC
+        LIMIT ?
+        """,
+        (pattern, max(top_sessions, 1)),
+    ).fetchall()
+    return [str(r["run_key"]) for r in rows]
+
+
+def _build_skill_markdown(skill_name: str, run_key: str, rows: list[sqlite3.Row]) -> str:
+    user_prompts: list[str] = []
+    tool_hints: list[str] = []
+    seen_tools: set[str] = set()
+    for row in rows:
+        kind = str(row["mark_kind"] or "")
+        body = str(row["text_body"] or "").strip()
+        if kind == "user_prompt" and body and len(user_prompts) < 6:
+            user_prompts.append(body.replace("\n", " ")[:180])
+
+        op_code = str(row["op_code"] or "").strip()
+        path_hint = str(row["file_path_hint"] or "").strip()
+        key = f"{op_code}|{path_hint}"
+        if op_code and key not in seen_tools and len(tool_hints) < 10:
+            seen_tools.add(key)
+            if path_hint:
+                tool_hints.append(f"{op_code} on {path_hint}")
+            else:
+                tool_hints.append(op_code)
+
+    description = f"Generated from session {run_key}. Use when tasks resemble this workflow."
+    if user_prompts:
+        description = f"Generated from session {run_key}. Use when user asks similar tasks."
+
+    if not user_prompts:
+        user_prompts = ["Apply the same workflow pattern found in this session."]
+    if not tool_hints:
+        tool_hints = ["Follow the session sequence and adapt safely to current repo context."]
+
+    lines: list[str] = [
+        "---",
+        f"name: {skill_name}",
+        f"description: {description}",
+        "---",
+        "",
+        f"# {skill_name}",
+        "",
+        "## Trigger examples",
+    ]
+    lines.extend([f"- {p}" for p in user_prompts])
+    lines.extend(
+        [
+            "",
+            "## Workflow",
+            "1. Reconstruct intent from the current user request.",
+            "2. Reuse the same execution shape from the source session.",
+            "3. Keep outputs concise and production-oriented.",
+            "",
+            "## Tool patterns",
+        ]
+    )
+    lines.extend([f"- {t}" for t in tool_hints])
+    lines.extend(
+        [
+            "",
+            "## Source",
+            f"- run_key: `{run_key}`",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _validate_skill_markdown(skill_md_path: Path) -> tuple[bool, str]:
+    try:
+        text = skill_md_path.read_text(encoding="utf-8")
+    except Exception as err:
+        return False, f"read failed: {err}"
+
+    if not text.startswith("---\n"):
+        return False, "missing frontmatter start"
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return False, "missing frontmatter end"
+    head = text[4:end]
+    has_name = any(line.strip().startswith("name:") for line in head.splitlines())
+    has_desc = any(line.strip().startswith("description:") for line in head.splitlines())
+    if not has_name or not has_desc:
+        return False, "frontmatter must include name and description"
+    body = text[end + 5 :].strip()
+    if not body:
+        return False, "empty body"
+    return True, "Skill is valid!"
+
+
+def _validate_with_quick_validate(skill_dir: Path) -> tuple[bool, str]:
+    try:
+        proc = subprocess.run(
+            ["quick_validate.py", str(skill_dir)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        md = skill_dir / "SKILL.md"
+        return _validate_skill_markdown(md)
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    combined = "\n".join([x for x in [out, err] if x]).strip()
+    if proc.returncode == 0:
+        return True, out or "Skill is valid!"
+    return False, combined or f"quick_validate failed with code {proc.returncode}"
+
+
+def cmd_make_skill(args: argparse.Namespace) -> None:
+    home = Path(args.home).expanduser()
+    db = cell_path(home, args.cell)
+    if not db.exists():
+        raise SystemExit(f"Cell not found: {db}. Run `kimchi init` first.")
+
+    conn = open_db(db)
+    try:
+        run_keys = [s.strip() for s in args.session_id if s.strip()]
+        if not run_keys and args.file:
+            run_keys = _recent_run_keys_for_file(conn, args.file, args.top_sessions)
+        if not run_keys:
+            raise RuntimeError("No target sessions. Pass --session-id or --file.")
+
+        names = [n.strip() for n in args.name if n.strip()]
+        if names and len(names) != len(run_keys):
+            raise RuntimeError("When using --name multiple times, count must match --session-id count.")
+
+        if not names:
+            names = [f"{args.name_prefix}-{_slugify(rk)[:24]}" for rk in run_keys]
+
+        dest_root = Path(args.dest).expanduser()
+        dest_root.mkdir(parents=True, exist_ok=True)
+
+        created_paths: list[Path] = []
+        validations: list[tuple[str, bool, str]] = []
+
+        for run_key, raw_name in zip(run_keys, names):
+            skill_name = _slugify(raw_name)
+            rows = _session_rows(conn, run_key, max_cards=args.max_cards)
+            if not rows:
+                raise RuntimeError(f"No rows found for session: {run_key}")
+
+            skill_dir = dest_root / skill_name
+            if skill_dir.exists() and not args.force:
+                raise RuntimeError(f"Skill already exists: {skill_dir} (use --force to overwrite)")
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(_build_skill_markdown(skill_name, run_key, rows), encoding="utf-8")
+            created_paths.append(skill_md)
+
+            ok, msg = _validate_with_quick_validate(skill_dir)
+            validations.append((skill_name, ok, msg))
+    finally:
+        conn.close()
+
+    valid_count = sum(1 for _, ok, _ in validations if ok)
+    print(f"• Created {len(created_paths)} new skill(s) based on those sessions")
+    print("  and validated them.\n")
+    for path in created_paths:
+        rel = path.relative_to(Path(args.dest).expanduser())
+        print(f"  - {rel.as_posix()}")
+    print("\n  Validation:\n")
+    for skill_name, ok, msg in validations:
+        marker = "Skill is valid!" if ok else f"Validation failed: {msg}"
+        print(f"  - quick_validate.py {skill_name} →\n    {marker}")
+    print("\n  You can now invoke them with:\n")
+    for skill_name, _, _ in validations:
+        print(f"  - ${skill_name}")
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     if args.embed_url:
         os.environ["KIMCHI_EMBED_URL"] = args.embed_url
@@ -366,7 +581,9 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     conn = open_db(db)
     try:
-        if args.schema_similar:
+        if args.file:
+            result = file_history_search(conn, args.file, limit=args.limit, semantic_query=args.semantic)
+        elif args.schema_similar:
             result = schema_similarity_search(conn, args.schema_similar, limit=args.limit)
         elif args.semantic:
             result = semantic_search(conn, args.semantic, limit=args.limit)
@@ -412,8 +629,21 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_search)
     p_search.add_argument("query", nargs="?", default="@search", help="SQL query or @preset")
     p_search.add_argument("--semantic", default="", help="Semantic text query")
+    p_search.add_argument("--file", default="", help="Filter to sessions that touched this file path (substring)")
     p_search.add_argument("--schema-similar", default="", help="Find similar table/view schema definitions")
     p_search.add_argument("--limit", type=int, default=10, help="Semantic result limit")
+
+    p_skill = sub.add_parser("make-skill", help="Generate Codex skill(s) from indexed session history")
+    p_skill.add_argument("--home", default=str(KIMCHI_HOME), help="Kimchi home directory")
+    p_skill.add_argument("--cell", default="codex_code", help="SQLite cell name")
+    p_skill.add_argument("--session-id", action="append", default=[], help="Source session id (repeatable)")
+    p_skill.add_argument("--name", action="append", default=[], help="Skill name (repeatable)")
+    p_skill.add_argument("--file", default="", help="Pick recent sessions that touched this file")
+    p_skill.add_argument("--top-sessions", type=int, default=2, help="How many recent file-matched sessions to use")
+    p_skill.add_argument("--name-prefix", default="kimchi-session", help="Auto-name prefix when --name is omitted")
+    p_skill.add_argument("--dest", default=str(Path.home() / ".codex" / "skills"), help="Destination skills dir")
+    p_skill.add_argument("--max-cards", type=int, default=300, help="Max cards to read per session")
+    p_skill.add_argument("--force", action="store_true", help="Overwrite existing skill directory")
 
     return parser
 
@@ -428,6 +658,8 @@ def main() -> None:
         cmd_index(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "make-skill":
+        cmd_make_skill(args)
     else:
         parser.print_help()
 

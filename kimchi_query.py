@@ -90,6 +90,82 @@ def semantic_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
     return scored[:limit]
 
 
+def _file_history_rows(conn: sqlite3.Connection, file_query: str) -> list[sqlite3.Row]:
+    pattern = f"%{file_query.strip()}%"
+    if not file_query.strip():
+        return []
+    return conn.execute(
+        """
+        WITH target_runs AS (
+            SELECT DISTINCT rc.run_key
+            FROM op_notes op
+            JOIN run_cards rc ON rc.card_key = op.card_key
+            WHERE LOWER(COALESCE(op.file_path_hint, '')) LIKE LOWER(?)
+        )
+        SELECT
+            pc.card_key,
+            pc.text_body,
+            pc.vec_blob,
+            pc.born_unix,
+            rc.run_key,
+            rc.turn_no,
+            cm.mark_kind,
+            cm.actor_role,
+            op.op_code,
+            op.file_path_hint,
+            op.pass_flag
+        FROM run_cards rc
+        JOIN pantry_cards pc ON pc.card_key = rc.card_key
+        LEFT JOIN card_marks cm ON cm.card_key = rc.card_key
+        LEFT JOIN op_notes op ON op.card_key = rc.card_key
+        WHERE rc.run_key IN (SELECT run_key FROM target_runs)
+        ORDER BY pc.born_unix DESC, rc.turn_no DESC
+        """,
+        (pattern,),
+    ).fetchall()
+
+
+def _history_item(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["card_key"],
+        "run_key": row["run_key"],
+        "turn_no": row["turn_no"],
+        "kind": row["mark_kind"],
+        "role": row["actor_role"],
+        "op_code": row["op_code"],
+        "file_path_hint": row["file_path_hint"],
+        "pass_flag": row["pass_flag"],
+        "timestamp": row["born_unix"],
+        "content": row["text_body"],
+    }
+
+
+def file_history_search(conn: sqlite3.Connection, file_query: str, limit: int = 20, semantic_query: str = "") -> list[dict]:
+    """Return history cards from sessions that touched a specific file path."""
+    rows = _file_history_rows(conn, file_query)
+    if not rows:
+        return []
+
+    query = semantic_query.strip()
+    if not query:
+        return [_history_item(row) for row in rows[:limit]]
+
+    qvec = embed_texts([query], prefix="search_query: ")[0]
+    scored: list[dict] = []
+    for row in rows:
+        try:
+            vec = json.loads(row["vec_blob"]) if row["vec_blob"] else None
+            score = _cosine(qvec, vec) if isinstance(vec, list) and vec else 0.0
+        except Exception:
+            score = 0.0
+        item = _history_item(row)
+        item["score"] = score
+        scored.append(item)
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
+
+
 def schema_similarity_search(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
     """Search schema objects (table/view definitions) by semantic similarity."""
     rows = conn.execute(
